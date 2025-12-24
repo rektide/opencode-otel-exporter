@@ -1,0 +1,39 @@
+{
+	"name": "opencode-otel-semantics-exporter",
+	"version": "1.0.0",
+	"description": "OpenCode plugin for exporting OpenTelemetry traces",
+	"main": "opencode-otel-semantics-exporter.js",
+	"scripts": {
+		"test": "echo \"Error: no test specified\" && exit 1"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/rektide/opencode-otel-semantics-exporter.git"
+	},
+	"keywords": ["opencode", "opentelemetry", "otel", "tracing", "observability"],
+	"author": "rektide de la faye",
+	"license": "MIT",
+	"type": "module",
+	"bugs": {
+		"url": "https://github.com/rektide/opencode-otel-semantics-exporter/issues"
+	},
+	"homepage": "https://github.com/rektide/opencode-otel-semantics-exporter#readme",
+	"module": "opencode-otel-semantics-exporter.js",
+	"dependencies": {
+		"@opentelemetry/api": "^1.9.0",
+		"@opentelemetry/sdk-trace": "^1.25.0",
+		"@opentelemetry/sdk-trace-node": "^1.25.0",
+		"@opentelemetry/exporter-trace-otlp-grpc": "^1.25.0",
+		"@opentelemetry/resources": "^1.25.0",
+		"@opentelemetry/semantic-conventions": "^1.25.0",
+		"@opencode-ai/plugin": "*"
+	},
+	"devDependencies": {
+		"typescript": "^5.0.0",
+		"tsx": "^4.0.0",
+		"oxfmt": "^0.17.0"
+	},
+	"peerDependencies": {
+		"typescript": "*"
+	}
+}
