@@ -1,13 +1,15 @@
 import type { Plugin } from "@opencode-ai/plugin"
-import { trace, context, SpanStatusCode, SpanKind } from "@opentelemetry/api"
-import { NodeTracerProvider, SimpleSpanProcessor } from "@opentelemetry/sdk-trace-node"
-import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-grpc"
+import { trace, SpanStatusCode, SpanKind } from "@opentelemetry/api"
+import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node"
 import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from "@opentelemetry/semantic-conventions"
+import { loadExporter, loadConfigFromEnv, SpanForwarder } from "./exporters/index.js"
 
 const SERVICE_NAME = "opencode-otel-exporter"
 const SERVICE_VERSION = "1.0.0"
 
 let tracer: trace.Tracer | null = null
+let provider: NodeTracerProvider | null = null
+let exporter: Awaited<ReturnType<typeof loadExporter>> | null = null
 
 interface SpanContext {
   sessionId?: string
@@ -88,22 +90,24 @@ function getSpanContext(event: any): SpanContext {
 }
 
 export const OtelSemanticsExporterPlugin: Plugin = async ({ project, client, $, directory, worktree }) => {
-  const collectorUrl = process.env.OPENTELEMETRY_COLLECTOR_URL || "http://localhost:4317"
+  const config = loadConfigFromEnv()
   
-  console.log(`[otel-exporter] Initializing OpenTelemetry exporter to ${collectorUrl}`)
+  console.log(`[otel-exporter] Initializing OpenTelemetry exporter (${config.format})`)
   
-  const exporter = new OTLPTraceExporter({
-    url: collectorUrl,
-  })
-  
-  const provider = new NodeTracerProvider({
-    spanProcessors: [
-      new SimpleSpanProcessor(exporter),
-    ],
-  })
-  
-  provider.register()
-  tracer = trace.getTracer("opencode")
+  try {
+    exporter = await loadExporter(config)
+    await exporter.initialize()
+    
+    provider = new NodeTracerProvider({
+      spanProcessors: [new SpanForwarder(exporter, config.batching)],
+    })
+    
+    provider.register()
+    tracer = trace.getTracer("opencode")
+  } catch (error) {
+    console.error("[otel-exporter] Failed to initialize:", error)
+    throw error
+  }
   
   return {
     event: async ({ event }) => {
@@ -112,7 +116,7 @@ export const OtelSemanticsExporterPlugin: Plugin = async ({ project, client, $, 
         
         switch (event.type) {
           case "tool.execute.before": {
-            const span = tracer.startSpan("tool.execute.before", {
+            const span = tracer!.startSpan("tool.execute.before", {
               kind: SpanKind.INTERNAL,
               attributes: getCommonAttributes(ctx),
             })
@@ -123,7 +127,7 @@ export const OtelSemanticsExporterPlugin: Plugin = async ({ project, client, $, 
           }
           
           case "tool.execute": {
-            const span = tracer.startSpan("tool.execute", {
+            const span = tracer!.startSpan("tool.execute", {
               kind: SpanKind.INTERNAL,
               attributes: getCommonAttributes(ctx),
             })
@@ -137,7 +141,7 @@ export const OtelSemanticsExporterPlugin: Plugin = async ({ project, client, $, 
           }
           
           case "tool.result": {
-            const span = tracer.startSpan("tool.result", {
+            const span = tracer!.startSpan("tool.result", {
               kind: SpanKind.INTERNAL,
               attributes: getCommonAttributes(ctx),
             })
@@ -151,7 +155,7 @@ export const OtelSemanticsExporterPlugin: Plugin = async ({ project, client, $, 
           }
           
           case "tool.execute.after": {
-            const span = tracer.startSpan("tool.execute.after", {
+            const span = tracer!.startSpan("tool.execute.after", {
               kind: SpanKind.INTERNAL,
               attributes: getCommonAttributes(ctx),
             })
@@ -161,7 +165,7 @@ export const OtelSemanticsExporterPlugin: Plugin = async ({ project, client, $, 
           }
           
           case "session.created": {
-            const span = tracer.startSpan("session.created", {
+            const span = tracer!.startSpan("session.created", {
               kind: SpanKind.SERVER,
               attributes: getCommonAttributes(ctx),
             })
@@ -172,7 +176,7 @@ export const OtelSemanticsExporterPlugin: Plugin = async ({ project, client, $, 
           }
           
           case "session.updated": {
-            const span = tracer.startSpan("session.updated", {
+            const span = tracer!.startSpan("session.updated", {
               kind: SpanKind.INTERNAL,
               attributes: getCommonAttributes(ctx),
             })
@@ -185,7 +189,7 @@ export const OtelSemanticsExporterPlugin: Plugin = async ({ project, client, $, 
           }
           
           case "session.idle": {
-            const span = tracer.startSpan("session.idle", {
+            const span = tracer!.startSpan("session.idle", {
               kind: SpanKind.SERVER,
               attributes: getCommonAttributes(ctx),
             })
@@ -196,7 +200,7 @@ export const OtelSemanticsExporterPlugin: Plugin = async ({ project, client, $, 
           
           case "session.completed":
           case "session.error": {
-            const span = tracer.startSpan(`session.${event.type}`, {
+            const span = tracer!.startSpan(`session.${event.type}`, {
               kind: SpanKind.SERVER,
               attributes: getCommonAttributes(ctx),
             })
@@ -206,7 +210,7 @@ export const OtelSemanticsExporterPlugin: Plugin = async ({ project, client, $, 
           }
           
           case "message.updated": {
-            const span = tracer.startSpan("message.updated", {
+            const span = tracer!.startSpan("message.updated", {
               kind: SpanKind.PRODUCER,
               attributes: getCommonAttributes(ctx),
             })
@@ -226,7 +230,7 @@ export const OtelSemanticsExporterPlugin: Plugin = async ({ project, client, $, 
           
           case "message.part.removed":
           case "message.part.updated": {
-            const span = tracer.startSpan(event.type, {
+            const span = tracer!.startSpan(event.type, {
               kind: SpanKind.PRODUCER,
               attributes: getCommonAttributes(ctx),
             })
@@ -240,7 +244,7 @@ export const OtelSemanticsExporterPlugin: Plugin = async ({ project, client, $, 
           
           case "file.edited":
           case "file.watcher.updated": {
-            const span = tracer.startSpan("file.edited", {
+            const span = tracer!.startSpan("file.edited", {
               kind: SpanKind.PRODUCER,
               attributes: getCommonAttributes(ctx),
             })
@@ -250,7 +254,7 @@ export const OtelSemanticsExporterPlugin: Plugin = async ({ project, client, $, 
           }
           
           case "command.executed": {
-            const span = tracer.startSpan("command.executed", {
+            const span = tracer!.startSpan("command.executed", {
               kind: SpanKind.CLIENT,
               attributes: getCommonAttributes(ctx),
             })
@@ -268,10 +272,11 @@ export const OtelSemanticsExporterPlugin: Plugin = async ({ project, client, $, 
     },
     
     async dispose() {
-      if (tracer) {
+      if (tracer && provider && exporter) {
         try {
           await provider.shutdown()
-          console.log("[otel-exporter] OpenTelemetry provider shut down")
+          await exporter.shutdown()
+          console.log("[otel-exporter] OpenTelemetry provider and exporter shut down")
         } catch (error) {
           console.error("[otel-exporter] Error shutting down provider:", error)
         }
