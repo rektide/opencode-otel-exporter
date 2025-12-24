@@ -13,9 +13,12 @@ Exports spans for following OpenCode events:
 
 **Multi-format export support:**
 - OTLP/gRPC (default) - Production distributed tracing
+- OTLP/HTTP - Firewall-friendly HTTP transport
 - Console - Development and debugging
 - File (JSON) - Offline analysis
 - File (NDJSON) - Stream processing and log aggregation
+- Jaeger - Direct Jaeger integration
+- Composite - Multiple exporters simultaneously
 
 ## Installation
 
@@ -52,6 +55,10 @@ Use `OPENTELEMETRY_EXPORT_FORMAT` environment variable to select export format:
 # Default: OTLP/gRPC (production)
 export OPENTELEMETRY_EXPORT_FORMAT=otlp-grpc
 
+# OTLP/HTTP (firewall-friendly)
+export OPENTELEMETRY_EXPORT_FORMAT=otlp-http
+export OPENTELEMETRY_COLLECTOR_URL=https://otel.example.com/v1/traces
+
 # Console logging (development)
 export OPENTELEMETRY_EXPORT_FORMAT=console
 
@@ -62,6 +69,14 @@ export OPENTELEMETRY_FILE_PATH=./spans.json
 # NDJSON file (log aggregation)
 export OPENTELEMETRY_EXPORT_FORMAT=file-ndjson
 export OPENTELEMETRY_FILE_PATH=./spans.ndjson
+
+# Jaeger (direct integration)
+export OPENTELEMETRY_EXPORT_FORMAT=jaeger
+export OPENTELEMETRY_JAEGER_ENDPOINT=http://localhost:14268/api/traces
+
+# Composite (multiple exporters)
+export OPENTELEMETRY_EXPORT_FORMAT=composite
+export OPENTELEMETRY_COMPOSITE_EXPORTERS='[{"format":"otlp-grpc","otlp":{"url":"http://localhost:4317"}},{"format":"console"}]'
 ```
 
 ### OTLP/gRPC Configuration
@@ -73,6 +88,31 @@ export OPENTELEMETRY_COLLECTOR_URL=http://localhost:4317
 # Compression (default: gzip)
 export OPENTELEMETRY_OTLP_COMPRESSION=gzip
 export OPENTELEMETRY_OTLP_COMPRESSION=none
+```
+
+### OTLP/HTTP Configuration
+
+```bash
+# Collector endpoint
+export OPENTELEMETRY_COLLECTOR_URL=https://otel.example.com/v1/traces
+
+# Compression (default: gzip)
+export OPENTELEMETRY_OTLP_COMPRESSION=gzip
+```
+
+### Jaeger Configuration
+
+```bash
+# HTTP endpoint
+export OPENTELEMETRY_JAEGER_ENDPOINT=http://localhost:14268/api/traces
+
+# UDP agent
+export OPENTELEMETRY_JAEGER_AGENT_HOST=localhost
+export OPENTELEMETRY_JAEGER_AGENT_PORT=6832
+
+# Authentication (optional)
+export OPENTELEMETRY_JAEGER_USERNAME=user
+export OPENTELEMETRY_JAEGER_PASSWORD=pass
 ```
 
 ### Console Exporter Configuration

@@ -1,11 +1,14 @@
 import type { SpanExporter } from "./base.js"
 import { OtlpGrpcExporter } from "./otlp/grpc.js"
+import { OtlpHttpExporter } from "./otlp/http.js"
 import { ConsoleExporter } from "./console/logger.js"
 import { FileJsonExporter } from "./file/json.js"
 import { FileNdjsonExporter } from "./file/ndjson.js"
+import { JaegerTraceExporter } from "./jaeger.js"
+import { CompositeExporter } from "./composite.js"
 
 export interface ExporterConfig {
-  format: "otlp-grpc" | "console" | "file-json" | "file-ndjson"
+  format: "otlp-grpc" | "otlp-http" | "console" | "file-json" | "file-ndjson" | "jaeger" | "composite"
   otlp?: {
     url: string
     compression?: "gzip" | "none"
@@ -20,6 +23,16 @@ export interface ExporterConfig {
   file?: {
     filepath: string
     append?: boolean
+  }
+  jaeger?: {
+    endpoint?: string
+    agentHost?: string
+    agentPort?: number
+    username?: string
+    password?: string
+  }
+  composite?: {
+    exporters: ExporterConfig[]
   }
   batching?: {
     enabled?: boolean
@@ -39,6 +52,16 @@ export async function loadExporter(
         throw new Error("otlp.url is required for otlp-grpc format")
       }
       return new OtlpGrpcExporter({
+        url: config.otlp.url,
+        compression: config.otlp.compression ?? "gzip",
+        headers: config.otlp.headers,
+      })
+
+    case "otlp-http":
+      if (!config.otlp?.url) {
+        throw new Error("otlp.url is required for otlp-http format")
+      }
+      return new OtlpHttpExporter({
         url: config.otlp.url,
         compression: config.otlp.compression ?? "gzip",
         headers: config.otlp.headers,
@@ -69,6 +92,23 @@ export async function loadExporter(
         filepath: config.file.filepath,
         append: config.file.append ?? true,
       })
+
+    case "jaeger":
+      return new JaegerTraceExporter({
+        endpoint: config.jaeger?.endpoint,
+        agentHost: config.jaeger?.agentHost,
+        agentPort: config.jaeger?.agentPort,
+        username: config.jaeger?.username,
+        password: config.jaeger?.password,
+      })
+
+    case "composite":
+      if (!config.composite?.exporters || config.composite.exporters.length === 0) {
+        throw new Error("composite.exporters is required and must not be empty")
+      }
+      const exporterPromises = config.composite.exporters.map(loadExporter)
+      const exporters = await Promise.all(exporterPromises)
+      return new CompositeExporter(exporters)
 
     default:
       throw new Error(`Unknown exporter format: ${config.format}`)
