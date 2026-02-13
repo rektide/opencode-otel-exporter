@@ -170,10 +170,14 @@ This plugin favors semantic trace quality over raw event mirroring. Instead of o
 
 Conversation turn hierarchy:
 
-```text
-chat (CLIENT)
-├─ thinking (INTERNAL)
-└─ tools/call <tool> (CLIENT)
+```mermaid
+graph TD
+  Chat[chat\nSpanKind.CLIENT]
+  Thinking[thinking\nSpanKind.INTERNAL]
+  ToolCall[tools/call <tool>\nSpanKind.CLIENT]
+
+  Chat --> Thinking
+  Chat --> ToolCall
 ```
 
 Behavior:
@@ -291,29 +295,15 @@ service:
 
 The plugin is built with a modular exporter architecture and a session-aware span correlator:
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│               opencode-otel-semantics-exporter                │
-│  ┌──────────────────────────────────────────────────────────┐ │
-│  │     Session State Correlator (by conversation id)        │ │
-│  │  - Active chat span                                      │ │
-│  │  - Active tool-call spans                                │ │
-│  │  - Pending user input                                    │ │
-│  └──────────────────────────────────────────────────────────┘ │
-│                         │                                    │
-│                         ▼                                    │
-│  ┌──────────────────────────────────────────────────────────┐ │
-│  │      OpenTelemetry JS SDK / TracerProvider              │ │
-│  │  └─ SpanForwarder (format-agnostic processor)           │ │
-│  └──────────────────────────────────────────────────────────┘ │
-│                         │                                    │
-│                         ▼                                    │
-│  ┌──────────────────────────────────────────────────────────┐ │
-│  │          Exporter Manager (configurable)                │ │
-│  │  - OTLP/gRPC  - OTLP/HTTP  - Jaeger                     │ │
-│  │  - Console    - File JSON   - File NDJSON               │ │
-│  └──────────────────────────────────────────────────────────┘ │
-└────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+  subgraph Plugin[opencode-otel-semantics-exporter]
+    Correlator[Session State Correlator\n- Active chat span\n- Active tool-call spans\n- Pending user input]
+    SDK[OpenTelemetry JS SDK / TracerProvider\nwith SpanForwarder]
+    Exporters[Exporter Manager\n- OTLP/gRPC\n- OTLP/HTTP\n- Jaeger\n- Console\n- File JSON\n- File NDJSON]
+
+    Correlator --> SDK --> Exporters
+  end
 ```
 
 See [PLAN-export-formats.md](./PLAN-export-formats.md) for detailed architecture and future plans.
