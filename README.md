@@ -4,12 +4,11 @@ OpenCode plugin that exports OpenTelemetry traces for various plugin events usin
 
 ## Features
 
-Exports spans for following OpenCode events:
-- Tool execution (`tool.execute`, `tool.execute.before`, `tool.execute.after`, `tool.result`)
-- Session lifecycle (`session.created`, `session.updated`, `session.completed`, `session.error`)
-- Message updates (`message.updated`, `message.part.updated`, `message.part.removed`)
-- File operations (`file.edited`, `file.watcher.updated`)
-- Command execution (`command.executed`)
+Exports spans using an MCP/gen-ai trace shape derived from `exp2span` patterns:
+- One parent `chat` span per conversation turn
+- Child `tools/call <tool>` spans for tool execution
+- Child `thinking` spans for reasoning/snapshots
+- Session-aware span closing on `session.updated`, `session.idle`, `session.completed`, and `session.error`
 
 **Multi-format export support:**
 - OTLP/gRPC (default) - Production distributed tracing
@@ -40,6 +39,8 @@ npm install @opentelemetry/api \
   @opentelemetry/sdk-trace \
   @opentelemetry/sdk-trace-node \
   @opentelemetry/exporter-trace-otlp-grpc \
+  @opentelemetry/exporter-trace-otlp-http \
+  @opentelemetry/exporter-jaeger \
   @opentelemetry/resources \
   @opentelemetry/semantic-conventions \
   @opencode-ai/plugin
@@ -163,6 +164,25 @@ export OPENTELEMETRY_BATCH_ENABLED=false
 
 The plugin automatically starts exporting traces when OpenCode loads. Configuration is done via environment variables.
 
+## Trace Model
+
+This plugin favors semantic trace quality over raw event mirroring. Instead of one span per OpenCode event, events are correlated into nested spans.
+
+Conversation turn hierarchy:
+
+```text
+chat (CLIENT)
+├─ thinking (INTERNAL)
+└─ tools/call <tool> (CLIENT)
+```
+
+Behavior:
+- User text becomes `gen_ai.input.messages` on the next `chat` span
+- Assistant text becomes `gen_ai.output.messages` on the active `chat` span
+- Tool input/output map to `gen_ai.tool.call.arguments` and `gen_ai.tool.call.result`
+- Tool and thinking spans are parented to the active `chat` span via OTel context propagation
+- Session completion/error events close active spans so traces flush cleanly
+
 ### Development Workflow
 
 For local development, use console output:
@@ -196,25 +216,30 @@ opencode
 
 ## Attributes
 
-The plugin adds the following attributes to spans:
+The plugin emits MCP/gen-ai aligned attributes:
 
-Common attributes:
+Core attributes:
 - `service.name`: `opencode-otel-exporter`
 - `service.version`: `1.0.0`
+- `mcp.protocol.version`: `2025-06-18`
+- `gen_ai.conversation.id`: Session/conversation identifier
 
-Context attributes:
-- `opencode.session.id`: Session ID
-- `opencode.message.id`: Message ID
-- `opencode.tool.name`: Tool name
-- `opencode.file.name`: File name
-- `opencode.user.id`: User ID
-- `opencode.project.id`: Project ID
+Transport and protocol attributes:
+- `jsonrpc.protocol.version`: `2.0`
+- `network.transport`: `tcp`
 
-Event-specific attributes:
-- Tool events: `tool.name`, `tool.input`, `tool.output`
-- Session events: `session.status`, `session.cost`, `session.messageCount`
-- Message events: `message.length`, `message.part.type`, `message.part.fileName`
-- File events: `file`
+GenAI chat attributes:
+- `gen_ai.input.messages`
+- `gen_ai.output.messages`
+- `gen_ai.system.agent_name` (when present)
+- `gen_ai.model.name` (when present)
+
+MCP tool call attributes:
+- `mcp.method.name`: `tools/call`
+- `gen_ai.operation.name`: `execute_tool`
+- `gen_ai.tool.name`
+- `gen_ai.tool.call.arguments`
+- `gen_ai.tool.call.result`
 
 ## Collector Configuration
 
@@ -264,28 +289,31 @@ service:
 
 ## Architecture
 
-The plugin is built with a modular exporter architecture:
+The plugin is built with a modular exporter architecture and a session-aware span correlator:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│               opencode-otel-semantics-exporter                 │
-│  ┌──────────────────────────────────────────────────────────┐  │
-│  │         OpenTelemetry JavaScript SDK                      │  │
-│  │  ┌────────────────────────────────────────────────────┐  │  │
-│  │  │  TracerProvider                                 │  │  │
-│  │  │  └─ SpanForwarder (format-agnostic processor)   │  │  │
-│  │  └────────────────────────────────────────────────────┘  │  │
-│  └──────────────────────────────────────────────────────────┘  │
-│                         │                                     │
-│                         ▼                                     │
-│  ┌──────────────────────────────────────────────────────────┐  │
-│  │          Exporter Manager (configurable)                 │  │
-│  │  - OTLP/gRPC Exporter                                 │  │
-│  │  - Console Exporter                                    │  │
-│  │  - File (JSON) Exporter                               │  │
-│  │  - File (NDJSON) Exporter                             │  │
-│  └──────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────┘
+│               opencode-otel-semantics-exporter                │
+│  ┌──────────────────────────────────────────────────────────┐ │
+│  │     Session State Correlator (by conversation id)        │ │
+│  │  - Active chat span                                      │ │
+│  │  - Active tool-call spans                                │ │
+│  │  - Pending user input                                    │ │
+│  └──────────────────────────────────────────────────────────┘ │
+│                         │                                    │
+│                         ▼                                    │
+│  ┌──────────────────────────────────────────────────────────┐ │
+│  │      OpenTelemetry JS SDK / TracerProvider              │ │
+│  │  └─ SpanForwarder (format-agnostic processor)           │ │
+│  └──────────────────────────────────────────────────────────┘ │
+│                         │                                    │
+│                         ▼                                    │
+│  ┌──────────────────────────────────────────────────────────┐ │
+│  │          Exporter Manager (configurable)                │ │
+│  │  - OTLP/gRPC  - OTLP/HTTP  - Jaeger                     │ │
+│  │  - Console    - File JSON   - File NDJSON               │ │
+│  └──────────────────────────────────────────────────────────┘ │
+└────────────────────────────────────────────────────────────────┘
 ```
 
 See [PLAN-export-formats.md](./PLAN-export-formats.md) for detailed architecture and future plans.
