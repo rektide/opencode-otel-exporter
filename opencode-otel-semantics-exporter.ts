@@ -1,8 +1,10 @@
 import type { Plugin } from "@opencode-ai/plugin"
-import { context, trace, SpanStatusCode, SpanKind } from "@opentelemetry/api"
-import type { Span, Tracer } from "@opentelemetry/api"
+import { context, trace, metrics, SpanStatusCode, SpanKind } from "@opentelemetry/api"
+import type { Span, Tracer, Meter, Counter } from "@opentelemetry/api"
 import { Resource } from "@opentelemetry/resources"
 import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node"
+import { MeterProvider, PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics"
+import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-http"
 import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from "@opentelemetry/semantic-conventions"
 import { loadExporter, loadConfigFromEnv, SpanForwarder } from "./exporters/index.js"
 
@@ -13,11 +15,16 @@ const MCP_PROTOCOL_VERSION = "2025-06-18"
 let tracer: Tracer | null = null
 let provider: NodeTracerProvider | null = null
 let exporter: Awaited<ReturnType<typeof loadExporter>> | null = null
+let meterProvider: MeterProvider | null = null
+let meter: Meter | null = null
+let tokenCounter: Counter | null = null
 
 interface SessionTraceState {
   chatSpan: Span | null
   activeToolSpans: Map<string, Span>
   pendingUserMessage?: string
+  totalInputTokens: number
+  totalOutputTokens: number
 }
 
 const sessionStates = new Map<string, SessionTraceState>()
@@ -74,11 +81,88 @@ function getSessionState(sessionId: string): SessionTraceState {
     state = {
       chatSpan: null,
       activeToolSpans: new Map(),
+      totalInputTokens: 0,
+      totalOutputTokens: 0,
     }
     sessionStates.set(sessionId, state)
   }
 
   return state
+}
+
+interface TokenUsage {
+  inputTokens?: number
+  outputTokens?: number
+  totalTokens?: number
+}
+
+function extractTokenUsage(event: any): TokenUsage | null {
+  const usage = 
+    event?.properties?.info?.usage ??
+    event?.properties?.usage ??
+    event?.properties?.part?.usage ??
+    event?.properties?.info?.message?.usage
+
+  if (!usage) {
+    return null
+  }
+
+  return {
+    inputTokens: 
+      usage.input_tokens ?? 
+      usage.promptTokens ?? 
+      usage.prompt_tokens,
+    outputTokens: 
+      usage.output_tokens ?? 
+      usage.completionTokens ?? 
+      usage.completion_tokens,
+    totalTokens: 
+      usage.total_tokens ?? 
+      usage.totalTokens,
+  }
+}
+
+function recordTokenMetrics(sessionId: string, usage: TokenUsage): void {
+  const state = getSessionState(sessionId)
+
+  const inputDelta = usage.inputTokens ?? 0
+  const outputDelta = usage.outputTokens ?? 0
+
+  state.totalInputTokens += inputDelta
+  state.totalOutputTokens += outputDelta
+
+  if (tokenCounter && (inputDelta > 0 || outputDelta > 0)) {
+    tokenCounter.add(inputDelta + outputDelta, {
+      "gen_ai.conversation.id": sessionId,
+      "gen_ai.token.type": "total",
+    })
+    
+    if (inputDelta > 0) {
+      tokenCounter.add(inputDelta, {
+        "gen_ai.conversation.id": sessionId,
+        "gen_ai.token.type": "input",
+      })
+    }
+    
+    if (outputDelta > 0) {
+      tokenCounter.add(outputDelta, {
+        "gen_ai.conversation.id": sessionId,
+        "gen_ai.token.type": "output",
+      })
+    }
+  }
+}
+
+function addTokenAttributes(span: Span, sessionId: string): void {
+  const state = getSessionState(sessionId)
+  
+  if (state.totalInputTokens > 0) {
+    span.setAttribute("gen_ai.usage.input_tokens", state.totalInputTokens)
+  }
+  
+  if (state.totalOutputTokens > 0) {
+    span.setAttribute("gen_ai.usage.output_tokens", state.totalOutputTokens)
+  }
 }
 
 function getBaseAttributes(
@@ -151,6 +235,7 @@ function closeSessionState(sessionId: string, statusCode = SpanStatusCode.OK): v
   state.activeToolSpans.clear()
 
   if (state.chatSpan) {
+    addTokenAttributes(state.chatSpan, sessionId)
     state.chatSpan.setStatus({ code: statusCode })
     state.chatSpan.end()
     state.chatSpan = null
@@ -212,17 +297,49 @@ export const OtelSemanticsExporterPlugin: Plugin = async ({ project, client, $, 
     exporter = await loadExporter(config)
     await exporter.initialize()
     
+    const resource = new Resource({
+      [ATTR_SERVICE_NAME]: SERVICE_NAME,
+      [ATTR_SERVICE_VERSION]: SERVICE_VERSION,
+      "mcp.protocol.version": MCP_PROTOCOL_VERSION,
+    })
+    
     provider = new NodeTracerProvider({
-      resource: new Resource({
-        [ATTR_SERVICE_NAME]: SERVICE_NAME,
-        [ATTR_SERVICE_VERSION]: SERVICE_VERSION,
-        "mcp.protocol.version": MCP_PROTOCOL_VERSION,
-      }),
+      resource,
       spanProcessors: [new SpanForwarder(exporter, config.batching)],
     })
     
     provider.register()
     tracer = trace.getTracer("opencode")
+
+    const metricsUrl = process.env.OPENTELEMETRY_METRICS_URL
+    if (metricsUrl) {
+      console.log(`[otel-metrics] Initializing metrics exporter: ${metricsUrl}`)
+      
+      const metricsExporter = new OTLPMetricExporter({
+        url: metricsUrl,
+      })
+      
+      const metricsReader = new PeriodicExportingMetricReader({
+        exporter: metricsExporter,
+        exportIntervalMillis: parseInt(
+          process.env.OPENTELEMETRY_METRICS_INTERVAL ?? "60000",
+          10
+        ),
+      })
+      
+      meterProvider = new MeterProvider({
+        resource,
+        readers: [metricsReader],
+      })
+      
+      meter = meterProvider.getMeter("opencode")
+      tokenCounter = meter.createCounter("gen_ai.client.token.usage", {
+        description: "Number of tokens used in AI operations",
+        unit: "{token}",
+      })
+      
+      console.log("[otel-metrics] Metrics exporter initialized")
+    }
   } catch (error) {
     console.error("[otel-exporter] Failed to initialize:", error)
     throw error
@@ -267,6 +384,11 @@ export const OtelSemanticsExporterPlugin: Plugin = async ({ project, client, $, 
 
           case "message.updated":
           case "message.part.updated": {
+            const usage = extractTokenUsage(event)
+            if (usage) {
+              recordTokenMetrics(sessionId, usage)
+            }
+
             const part = event?.properties?.part
             const partType = asString(part?.type)
             const role = extractRole(event)
@@ -288,6 +410,7 @@ export const OtelSemanticsExporterPlugin: Plugin = async ({ project, client, $, 
                     },
                   ]),
                 )
+                addTokenAttributes(chatSpan, sessionId)
               }
             }
 
@@ -355,6 +478,12 @@ export const OtelSemanticsExporterPlugin: Plugin = async ({ project, client, $, 
 
           await provider.shutdown()
           await exporter.shutdown()
+          
+          if (meterProvider) {
+            await meterProvider.shutdown()
+            console.log("[otel-metrics] Metrics provider shut down")
+          }
+          
           console.log("[otel-exporter] OpenTelemetry provider and exporter shut down")
         } catch (error) {
           console.error("[otel-exporter] Error shutting down provider:", error)

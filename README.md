@@ -38,8 +38,10 @@ cp -r exporters .opencode/plugin/
 npm install @opentelemetry/api \
   @opentelemetry/sdk-trace \
   @opentelemetry/sdk-trace-node \
+  @opentelemetry/sdk-metrics \
   @opentelemetry/exporter-trace-otlp-grpc \
   @opentelemetry/exporter-trace-otlp-http \
+  @opentelemetry/exporter-metrics-otlp-http \
   @opentelemetry/exporter-jaeger \
   @opentelemetry/resources \
   @opentelemetry/semantic-conventions \
@@ -160,6 +162,27 @@ export OPENTELEMETRY_BATCH_QUEUE_SIZE=2048
 export OPENTELEMETRY_BATCH_ENABLED=false
 ```
 
+### Metrics Configuration
+
+OpenTelemetry metrics are exported when `OPENTELEMETRY_METRICS_URL` is set:
+
+```bash
+# Enable metrics export (OTLP/HTTP)
+export OPENTELEMETRY_METRICS_URL=http://localhost:4318/v1/metrics
+
+# Export interval in milliseconds (default: 60000)
+export OPENTELEMETRY_METRICS_INTERVAL=60000
+```
+
+**Available metrics:**
+- `gen_ai.client.token.usage` - Counter tracking token usage per session
+  - Attributes: `gen_ai.conversation.id`, `gen_ai.token.type` (input/output/total)
+
+**Token attributes on spans:**
+When token usage data is available from OpenCode events, the following attributes are added to chat spans:
+- `gen_ai.usage.input_tokens` - Cumulative input token count
+- `gen_ai.usage.output_tokens` - Cumulative output token count
+
 ## Usage
 
 The plugin automatically starts exporting traces when OpenCode loads. Configuration is done via environment variables.
@@ -274,6 +297,10 @@ MCP tool call attributes:
 - `gen_ai.tool.name`
 - `gen_ai.tool.call.arguments`
 - `gen_ai.tool.call.result`
+
+Token usage attributes (when available):
+- `gen_ai.usage.input_tokens`: Cumulative input tokens per session
+- `gen_ai.usage.output_tokens`: Cumulative output tokens per session
 
 ## Collector Configuration
 
