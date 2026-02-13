@@ -187,6 +187,36 @@ Behavior:
 - Tool and thinking spans are parented to the active `chat` span via OTel context propagation
 - Session completion/error events close active spans so traces flush cleanly
 
+Event-to-span flow:
+
+```mermaid
+sequenceDiagram
+  participant OC as OpenCode Events
+  participant C as Session Correlator
+  participant T as Tracer
+
+  OC->>C: message.updated (user text)
+  C->>C: store pending user input
+
+  OC->>C: message.part.updated (assistant text)
+  C->>T: start chat span if missing
+  C->>T: set gen_ai.input.messages
+  C->>T: set gen_ai.output.messages
+
+  OC->>C: tool.execute.before / tool.execute
+  C->>T: start tools/call child span
+  C->>T: set gen_ai.tool.call.arguments
+
+  OC->>C: tool.result
+  C->>T: set gen_ai.tool.call.result
+
+  OC->>C: tool.execute.after
+  C->>T: end tools/call child span
+
+  OC->>C: session.completed / session.error
+  C->>T: end active chat + tool spans
+```
+
 ### Development Workflow
 
 For local development, use console output:
