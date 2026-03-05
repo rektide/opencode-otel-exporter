@@ -243,6 +243,7 @@ function getBaseAttributes(
 ): Record<string, string> {
   const attributes: Record<string, string> = {
     "gen_ai.conversation.id": sessionId,
+    "mcp.session.id": sessionId,
     "jsonrpc.protocol.version": "2.0",
     "network.transport": "tcp",
     "mcp.protocol.version": MCP_PROTOCOL_VERSION,
