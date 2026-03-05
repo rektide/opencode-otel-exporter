@@ -124,3 +124,38 @@ For semconv alignment decisions, prefer `exp2span` code first, then README, then
 3. Add privacy controls for content-bearing attributes.
 4. Update token metric instrument + attribute set to current GenAI metric conventions.
 5. Add MCP `_meta` trace propagation when data model supports it.
+
+## Appendix: `_meta` trace propagation (brief)
+
+When OpenCode event payloads expose MCP request/notification params, use this flow:
+
+1. **Outbound MCP request path**
+   - Build/retain `params._meta` object.
+   - Inject W3C context into that bag using OTel propagation (`traceparent`, optional `tracestate`, optional `baggage`).
+   - Do not overwrite unrelated `_meta` keys already set by app/tooling.
+
+2. **Inbound MCP handling path**
+   - Extract parent context from `params._meta` first.
+   - Start MCP/tool span with extracted remote parent.
+   - If ambient transport context exists (for example HTTP span), add it as a span link when parent differs.
+
+3. **Fallback behavior**
+   - If `_meta` is missing, use existing ambient context behavior.
+   - If extraction fails, continue without failing request processing.
+
+Minimal JSON shape:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "tools/call",
+  "params": {
+    "name": "read",
+    "_meta": {
+      "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+      "tracestate": "rojo=00f067aa0ba902b7"
+    }
+  },
+  "id": 1
+}
+```
