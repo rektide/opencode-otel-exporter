@@ -96,6 +96,78 @@ interface TokenUsage {
   totalTokens?: number
 }
 
+interface ErrorAttributes {
+  type: string
+  message?: string
+  rpcStatusCode?: string
+}
+
+function extractErrorAttributes(
+  event: any,
+  defaultType?: string,
+): ErrorAttributes | null {
+  const error =
+    event?.properties?.error ??
+    event?.properties?.info?.error ??
+    event?.properties?.result?.error ??
+    event?.properties?.output?.error ??
+    event?.error
+
+  const rpcStatusCode =
+    asString(event?.properties?.rpc?.response?.status_code) ??
+    asString(event?.properties?.rpcStatusCode) ??
+    asString(event?.properties?.statusCode) ??
+    asString(error?.code)
+
+  const status = asString(event?.properties?.status)?.toLowerCase()
+  const state = asString(event?.properties?.state)?.toLowerCase()
+  const hasExplicitError = error !== undefined && error !== null
+  const indicatesFailure =
+    status === "error" ||
+    status === "failed" ||
+    state === "error" ||
+    state === "failed" ||
+    event?.properties?.ok === false ||
+    event?.properties?.success === false ||
+    event?.properties?.output?.isError === true
+
+  const type =
+    asString(error?.type) ??
+    asString(error?.name) ??
+    asString(event?.properties?.errorType) ??
+    (hasExplicitError || indicatesFailure ? rpcStatusCode : undefined) ??
+    (typeof error === "string" ? error : undefined) ??
+    (indicatesFailure ? defaultType : undefined)
+
+  if (!type) {
+    return null
+  }
+
+  const message =
+    asString(error?.message) ??
+    asString(event?.properties?.message) ??
+    (typeof error === "string" ? error : undefined)
+
+  return {
+    type,
+    message,
+    rpcStatusCode,
+  }
+}
+
+function applyErrorAttributes(span: Span, error: ErrorAttributes): void {
+  span.setAttribute("error.type", error.type)
+
+  if (error.rpcStatusCode) {
+    span.setAttribute("rpc.response.status_code", error.rpcStatusCode)
+  }
+
+  span.setStatus({
+    code: SpanStatusCode.ERROR,
+    message: error.message,
+  })
+}
+
 function extractTokenUsage(event: any): TokenUsage | null {
   const usage = 
     event?.properties?.info?.usage ??
@@ -222,21 +294,30 @@ function ensureChatSpan(sessionId: string, event: any): Span {
   return span
 }
 
-function closeSessionState(sessionId: string, statusCode = SpanStatusCode.OK): void {
+function closeSessionState(
+  sessionId: string,
+  errorAttributes?: ErrorAttributes,
+): void {
   const state = sessionStates.get(sessionId)
   if (!state) {
     return
   }
 
   for (const toolSpan of state.activeToolSpans.values()) {
-    toolSpan.setStatus({ code: statusCode })
+    if (errorAttributes) {
+      applyErrorAttributes(toolSpan, errorAttributes)
+    }
     toolSpan.end()
   }
   state.activeToolSpans.clear()
 
   if (state.chatSpan) {
     addTokenAttributes(state.chatSpan, sessionId)
-    state.chatSpan.setStatus({ code: statusCode })
+
+    if (errorAttributes) {
+      applyErrorAttributes(state.chatSpan, errorAttributes)
+    }
+
     state.chatSpan.end()
     state.chatSpan = null
   }
@@ -369,14 +450,23 @@ export const OtelSemanticsExporterPlugin: Plugin = async ({ project, client, $, 
             if (outputJson) {
               toolSpan.setAttribute("gen_ai.tool.call.result", outputJson)
             }
-            toolSpan.setStatus({ code: SpanStatusCode.OK })
+
+            const errorAttributes = extractErrorAttributes(event, "tool_error")
+            if (errorAttributes) {
+              applyErrorAttributes(toolSpan, errorAttributes)
+            }
             break
           }
 
           case "tool.execute.after": {
             const key = getToolCallKey(event)
             const toolSpan = state.activeToolSpans.get(key) ?? startToolCallSpan(sessionId, event)
-            toolSpan.setStatus({ code: SpanStatusCode.OK })
+
+            const errorAttributes = extractErrorAttributes(event, "tool_error")
+            if (errorAttributes) {
+              applyErrorAttributes(toolSpan, errorAttributes)
+            }
+
             toolSpan.end()
             state.activeToolSpans.delete(key)
             break
@@ -437,7 +527,6 @@ export const OtelSemanticsExporterPlugin: Plugin = async ({ project, client, $, 
                     },
                   ]),
                 )
-                thinkingSpan.setStatus({ code: SpanStatusCode.OK })
                 thinkingSpan.end()
               }
             }
@@ -451,12 +540,14 @@ export const OtelSemanticsExporterPlugin: Plugin = async ({ project, client, $, 
 
           case "session.idle":
           case "session.completed": {
-            closeSessionState(sessionId, SpanStatusCode.OK)
+            closeSessionState(sessionId)
             break
           }
 
           case "session.error": {
-            closeSessionState(sessionId, SpanStatusCode.ERROR)
+            closeSessionState(sessionId, extractErrorAttributes(event, "session_error") ?? {
+              type: "session_error",
+            })
             break
           }
 
