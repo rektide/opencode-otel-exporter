@@ -352,6 +352,11 @@ function startToolCallSpan(sessionId: string, event: any): Span {
     "gen_ai.tool.name": toolName,
   }
 
+  const callId = asString(event?.properties?.callId)
+  if (callId) {
+    attributes["jsonrpc.request.id"] = callId
+  }
+
   const inputJson = toJson(event?.properties?.input)
   if (inputJson) {
     attributes["gen_ai.tool.call.arguments"] = inputJson
