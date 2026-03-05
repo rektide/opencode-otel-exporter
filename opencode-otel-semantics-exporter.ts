@@ -12,6 +12,8 @@ const SERVICE_NAME = "opencode-otel-exporter"
 const SERVICE_VERSION = "1.0.0"
 const MCP_PROTOCOL_VERSION = "2025-06-18"
 
+const NETWORK_TRANSPORT = process.env.OPENTELEMETRY_NETWORK_TRANSPORT || "pipe"
+
 let tracer: Tracer | null = null
 let provider: NodeTracerProvider | null = null
 let exporter: Awaited<ReturnType<typeof loadExporter>> | null = null
@@ -245,7 +247,7 @@ function getBaseAttributes(
     "gen_ai.conversation.id": sessionId,
     "mcp.session.id": sessionId,
     "jsonrpc.protocol.version": "2.0",
-    "network.transport": "tcp",
+    "network.transport": NETWORK_TRANSPORT,
     "mcp.protocol.version": MCP_PROTOCOL_VERSION,
   }
 
